@@ -1,0 +1,165 @@
+---
+- name: "Merge variables with defaults"
+  set_fact:
+    merged_devices: "{{ (merged_devices | default([])) + [ device_default_args | combine(item) ] }}"
+  loop: "{{ devices }}"
+
+- name: "Slurp original fstab for later comparison"
+  slurp:
+    src: "{{ fstab_path }}"
+  register:
+    fstab_result
+
+- name: "Build backup_fstab dictionary"
+  set_fact:
+    backup_fstab: "{{ ( backup_fstab | default({}) ) | combine( { item.split()[1]: { 'src': item.split()[0], 'fstype': item.split()[2], 'opts': item.split()[3], 'dump': item.split()[4], 'passno': item.split()[5] } }, recursive=True) }}"
+  loop: "{{ fstab_result['content'] | b64decode | split('\n') | reject('match', '^#.*') | reject('match', '^\\s*$') | list }}"
+
+- name: "Slurp original /proc/mounts for later comparison"
+  slurp:
+    src: "/proc/mounts"
+  register:
+    mounts_result
+
+- name: "Build backup_mounts dictionary (1/2)"
+  set_fact:
+    backup_mounts_unclean: "{{ ( backup_mounts_unclean | default({}) ) | combine( { item.split()[1]: { 'src': item.split()[0], 'fstype': item.split()[2], 'opts': item.split()[3], 'dump': item.split()[4], 'passno': item.split()[5] } }, recursive=True) }}"
+  loop: "{{ mounts_result['content'] | b64decode | split('\n') | list }}"
+
+- name: "Build backup_mounts dictionary (2/2)"
+  set_fact:
+    backup_mounts: "{{ ( backup_mounts | default({}) ) | combine({item.key: item.value}) }}"
+  when: "item.key in ( merged_devices | map(attribute='mountpoint') )"
+  loop: "{{ backup_mounts_unclean | dict2items }}"
+
+- name: "Print backup_mounts dictionary for debug"
+  debug:
+    var: backup_mounts
+  when: print_debug
+
+- name: "Mount and unmount devices (ignore failures)"
+  become: true
+  mount:
+    name: "{{ item.mountpoint }}"
+    src: "{{ item.src | default(omit) }}"
+    fstype: "{{ item.fstype | default(omit)}}"
+    opts: "{{ item.opts }}"
+    dump: "{{ item.dump }}"
+    passno: "{{ item.passno }}"
+    state: "{{ item.state }}"
+    fstab: "{{ fstab_path }}"
+  ignore_errors: true
+  register: mount_result
+  loop: "{{ merged_devices }}"
+
+- name: "Print mount results for any mount fails"
+  debug:
+    var: mount_result
+  when: mount_result.results | selectattr('failed') | list | length > 0
+
+- block:
+
+    - name: "Fail if any 'continue_on_fail' == false"
+      fail:
+        msg: "Mounting device {{ item.mountpoint }} failed, but 'device.continue_on_fail' was not set to true."
+      when: mount_result.results | selectattr('item.mountpoint', 'equalto', item.mountpoint) | selectattr('failed') | rejectattr('item.continue_on_fail') | list | length > 0
+      loop: "{{ merged_devices }}"
+
+    - name: "Purge mountpoints for absent devices"
+      become: true
+      file:
+        path: "{{ item.mountpoint }}"
+        state: "absent"
+      changed_when: false
+      when: (mount_result.results | selectattr('item.mountpoint', 'equalto', item.mountpoint) | selectattr('failed') | list | length > 0 )
+      loop: "{{ merged_devices }}"
+
+    - name: "Print recap message (skipped in check_mode)"
+      debug:
+        msg: "Passed with {{ mount_result.results | selectattr('failed', 'equalto', false) | list | length }} success(es) and {{ mount_result.results | selectattr('failed') | rejectattr('item.continue_on_fail', 'equalto', false) | list | length }} non-critical failure(s)."
+      when: not ansible_check_mode
+
+  rescue:
+
+    - name: "Rollback all changes (rollback previously in fstab: mounted and present, unmounted and present) (1/2)"
+      become: true
+      mount:
+        name: "{{ item.mountpoint }}"
+        src: "{{ backup_fstab[item.mountpoint].src }}"
+        fstype: "{{ backup_fstab[item.mountpoint].fstype }}"
+        opts: "{{ backup_fstab[item.mountpoint].opts | default(omit) }}"
+        dump: "{{ backup_fstab[item.mountpoint].dump }}"
+        passno: "{{ backup_fstab[item.mountpoint].passno }}"
+        state: "{{ 'mounted' if item.mountpoint in backup_mounts else 'present' }}"
+        fstab: "{{ fstab_path }}"
+      when: item.mountpoint in backup_fstab and ( mount_result.results | selectattr('item.mountpoint', 'equalto', item.mountpoint) | selectattr('failed') | list | length == 0 )
+      loop: "{{ merged_devices }}"
+
+    - name: "Rollback all changes (rollback previously in fstab: mounted and present, unmounted and present) (2/2)"
+      become: true
+      mount:
+        name: "{{ item.mountpoint }}"
+        state: "unmounted"
+        fstab: "{{ fstab_path }}"
+      when: item.mountpoint in backup_fstab and item.mountpoint not in backup_mounts and ( mount_result.results | selectattr('item.mountpoint', 'equalto', item.mountpoint) | selectattr('failed') | list | length == 0 )
+      loop: "{{ merged_devices }}"
+
+    - name: "Rollback all changes (rollback previously not in fstab: mounted)"
+      become: true
+      command: "mount -t {{ backup_mounts[item.mountpoint].fstype }} -o {{ backup_mounts[item.mountpoint].opts }} {{ backup_mounts[item.mountpoint].src }} {{ item.mountpoint }}"
+      args:
+        warn: false
+      when: item.mountpoint not in backup_fstab and item.mountpoint in backup_mounts
+      loop: "{{ merged_devices }}"
+
+    - name: "Rollback all changes (rollback previously not in fstab: unmounted)"
+      become: true
+      mount:
+        name: "{{ item.mountpoint }}"
+        state: "absent"
+        fstab: "{{ fstab_path }}"
+      when: item.mountpoint not in backup_fstab and item.mountpoint not in backup_mounts
+      loop: "{{ merged_devices }}"
+
+    - name: "Slurp rolled-back fstab for later comparison"
+      slurp:
+        src: "{{ fstab_path }}"
+      register:
+        fstab_rollback_result
+
+    - name: "Build rollback_fstab dictionary"
+      set_fact:
+        rollback_fstab: "{{ ( rollback_fstab | default({}) ) | combine( { item.split()[1]: { 'src': item.split()[0], 'fstype': item.split()[2], 'opts': item.split()[3], 'dump': item.split()[4], 'passno': item.split()[5] } }, recursive=True) }}"
+      loop: "{{ fstab_rollback_result['content'] | b64decode | split('\n') | reject('match', '^#.*') | reject('match', '^\\s*$') | list }}"
+
+    - name: "Slurp rolled-back /proc/mounts for later comparison"
+      slurp:
+        src: "/proc/mounts"
+      register:
+        mounts_rollback_result
+
+    - name: "Build rollback_mounts dictionary (1/2)"
+      set_fact:
+        rollback_mounts_unclean: "{{ ( rollback_mounts_unclean | default({}) ) | combine( { item.split()[1]: { 'src': item.split()[0], 'fstype': item.split()[2], 'opts': item.split()[3], 'dump': item.split()[4], 'passno': item.split()[5] } }, recursive=True) }}"
+      loop: "{{ mounts_rollback_result['content'] | b64decode | split('\n') | list }}"
+
+    - name: "Build rollback_mounts dictionary (2/2)"
+      set_fact:
+        rollback_mounts: "{{ ( rollback_mounts | default({}) ) | combine({item.key: item.value}) }}"
+      when: "item.key in ( merged_devices | map(attribute='mountpoint') )"
+      loop: "{{ rollback_mounts_unclean | dict2items }}"
+
+    - name: "Print rollback_mounts dictionary for debug"
+      debug:
+        var: rollback_mounts
+      when: print_debug
+
+    - name: "Assert that original fstab and rolled-back fstab have no differences. List the differences"
+      assert:
+        that: "{{ backup_fstab == rollback_fstab }}"
+        msg: "{{ ( backup_mounts.items() | list ) | difference( rollback_mounts.items() | list ) }}"
+
+    - name: "Assert that original /proc/mounts and rolled-back /proc/mounts have no differences (checking only on devices managed by the role). List the differences"
+      assert:
+        that: "{{ backup_mounts == rollback_mounts }}"
+        msg: "{{ ( backup_mounts.items() | list ) | difference( rollback_mounts.items() | list ) }}"

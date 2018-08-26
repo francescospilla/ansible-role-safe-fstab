@@ -1,0 +1,29 @@
+---
+dependencies: []
+
+galaxy_info:
+  role_name: safe-fstab
+  author: Francesco Spilla
+  description: A simple wrapper for the mount module for Linux that rolls-back changes if any mount operation fails without leaving the system in an half-configured state, unless desired otherwise (on a per-device basis).
+  issue_tracker_url: https://gitlab.com/francesco.spilla/ansible-role-safe-fstab/issues
+  license: "license (MIT)"
+  min_ansible_version: 2.4
+  platforms:
+    - name: CentOS
+      versions:
+        - 6
+        - 7
+    - name: Debian
+      versions:
+        - jessie
+        - stretch
+    - name: Ubuntu
+      versions:
+        - trusty
+        - xenial
+        - bionic
+  galaxy_tags:
+    - devices
+    - mount
+    - system
+    - volumes

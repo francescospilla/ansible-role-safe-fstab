@@ -1,0 +1,27 @@
+---
+# Print debug information on supported tasks.
+print_debug: false
+
+# The path to the fstab file.
+fstab_path: '/etc/fstab'
+
+devices: []
+# Example device below, showing all available options (defaults are detailed in 'device_default_args'):
+# - mountpoint: '/mnt/disk1' # default: N/A (required)
+#   src: '/dev/sdb1'         # default: N/A (required when 'state' is 'present' or 'mounted')
+#   fstype: 'vfat'           # default: N/A (required when 'state' is 'present' or 'mounted')
+#   state: 'mounted'         # default: 'mounted'
+#   dump: 0                  # default 0
+#   passno: 0                # default 0
+#   continue_on_fail: true   # deault: false
+#
+#   # Properties that are only added if defined:
+#   opts: "ro,user,noauto"
+
+# The default arguments for each device in 'devices'
+device_default_args:
+  state: 'mounted'
+  dump: 0
+  passno: 0
+  continue_on_fail: false
+  opts: "{{ omit }}"

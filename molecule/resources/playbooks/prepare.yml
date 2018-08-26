@@ -1,0 +1,74 @@
+---
+- name: Prepare
+  hosts: all
+  become: true
+  tasks:
+    - name: PREPARE | Install 'parted' utility
+      package:
+        name: parted
+        state: present
+
+    - name: PREPARE | Configure disk partitions
+      parted:
+        device: /dev/sdb
+        label: gpt
+        number: "{{ item.number }}"
+        part_start: "{{ item.start }}"
+        part_end: "{{ item.end }}"
+        state: present
+      with_items:
+        - { number: 1, start: 0%, end: 15% }
+        - { number: 2, start: 30%, end: 55% }
+        - { number: 3, start: 56%, end: 58% }
+        - { number: 4, start: 70%, end: 73% }
+
+    - name: PREPARE | Format partitions
+      filesystem:
+        dev: "/dev/sdb{{ item }}"
+        fstype: ext4
+        opts: "-L Part_{{ item }}"
+      with_sequence: start=1 end=4
+
+    - name: PREPARE | Gathering facts
+      setup:
+
+    - name: PREPARE | Mount first partition
+      mount:
+        src: /dev/sdb1
+        path: /mnt/disk1
+        fstype: ext4
+        state: mounted
+
+    - name: PREPARE | Touch files on first partition
+      file:
+        path: "/mnt/disk1/{{ item }}"
+        state: touch
+      with_items:
+        - "a_File"
+        - "another_File"
+        - "yet_Another_File"
+
+    - name: PREPARE | Finalize mounts for all partitions
+      mount:
+        src: "{{ item.src }}"
+        path: "/mnt/disk{{ item.number }}"
+        fstype: ext4
+        state: "{{ item.state }}"
+      with_items:
+        - { src: "/dev/sdb1", number: 1, state: "absent" }
+        - { src: "UUID={{ ansible_devices.sdb.partitions.sdb2.uuid }}", number: 2, state: "mounted" }
+        - { src: "LABEL=Part_3", number: 3, state: "present" }
+        - { src: "/dev/sdb4", number: 4, state: "absent" }
+        - { src: "/dev/sdb5", number: 5, state: "absent" }
+        - { src: "/dev/sdb6", number: 6, state: "unmounted" }
+
+    - name: PREPARE | Create mountpoint for fourth partition
+      file:
+        path: "/mnt/not-in-fstab"
+        state: directory
+
+    - name: PREPARE | Mount fourth partition with cli
+      shell: "mount /dev/sdb4 /mnt/not-in-fstab"
+      args:
+        warn: false
+      register: mount_result

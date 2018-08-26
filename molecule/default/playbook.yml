@@ -1,0 +1,13 @@
+---
+- name: Converge
+  hosts: all
+  roles:
+    - role: safe-fstab
+      vars:
+        devices:
+          - { mountpoint: "/mnt/disk1", src: "/dev/sdb1", fstype: "ext4", opts: "defaults" }
+          - { mountpoint: "/mnt/disk2", state: absent }
+          - { mountpoint: "/mnt/disk3", state: unmounted }
+          - { mountpoint: "/mnt/not-in-fstab", state: unmounted }
+          - { mountpoint: "/mnt/disk5", src: "/dev/sdb5", fstype: "ext4", state: present }
+          - { mountpoint: "/mnt/disk6", src: "/dev/sdb6", fstype: "ext4", continue_on_fail: true }
