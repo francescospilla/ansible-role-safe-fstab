@@ -89,6 +89,10 @@ This role is tested against the following platforms:
   versions:
     - 6
     - 7
+- name: Fedora
+  versions:
+    - 27
+    - 28
 - name: Debian
   versions:
     - jessie
